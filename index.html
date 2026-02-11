@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<title>Gravity Path Challenge</title>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+
+<style>
+body { font-family: Arial; text-align:center; background:#f4f6f8; padding:20px; }
+.grid { display:grid; margin:20px auto; gap:2px; justify-content:center; }
+.cell {
+  width:50px; height:50px; font-size:11px;
+  border:1px solid #ccc;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; background:white; user-select:none;
+}
+.start { background:#4CAF50; color:white; font-weight:bold; }
+.end { background:#E53935; color:white; font-weight:bold; }
+.path { background:#90CAF9; }
+.optimal { background:gold; }
+button { margin:5px; padding:6px 12px; cursor:pointer; }
+.rules {
+  max-width:700px; margin:10px auto; text-align:left;
+  background:white; padding:15px; border-radius:6px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.1);
+}
+.result { margin-top:15px; font-weight:bold; font-size:18px; }
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+
+/* ---------------- CONFIG ---------------- */
+const GRID_SIZE = 16;
+const SOURCE = [GRID_SIZE - 1, 0];
+const DEST = [0, GRID_SIZE - 1];
+
+/* -------- SEED UTIL -------- */
+function stringToSeed(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return Math.abs(hash);
+}
+
+function seededRandom(seed) {
+  let x = Math.sin(seed) * 10000;
+  return x - Math.floor(x);
+}
+
+/* -------- GRID GENERATOR -------- */
+function generateGrid(code) {
+  const seed = stringToSeed(code);
+  const grid = [];
+
+  for (let r = 0; r < GRID_SIZE; r++) {
+    let row = [];
+    for (let c = 0; c < GRID_SIZE; c++) {
+
+      // Keep variation within ~20m mostly
+      let base = 100
+        + 10 * Math.sin((r + seed) / 2)
+        + 10 * Math.cos((c + seed) / 3)
+        + 5 * seededRandom(seed + r * 13 + c * 17);
+
+      let elevation = base;
+
+      // Add occasional steep barrier zones
+      if ((r === 3 && c > 2 && c < 8) ||
+          (c === 6 && r > 1 && r < 7)) {
+        elevation += 25; // creates >15m steps
+      }
+
+      row.push(Math.round(elevation));
+    }
+    grid.push(row);
+  }
+
+  return grid;
+}
+
+/* -------- COST FUNCTION -------- */
+function moveCost(grid, r1, c1, r2, c2) {
+  const diff = grid[r2][c2] - grid[r1][c1];
+
+  if (diff > 15) return Infinity;
+
+  let cost = 1;
+  if (diff > 0) cost += Math.ceil(diff / 5);
+  else cost += 0.5;
+
+  return cost;
+}
+
+/* -------- DIJKSTRA -------- */
+function findOptimal(grid) {
+  const size = GRID_SIZE;
+  const dist = Array(size).fill().map(()=>Array(size).fill(Infinity));
+  const prev = Array(size).fill().map(()=>Array(size).fill(null));
+  const pq = [];
+
+  pq.push({ r: SOURCE[0], c: SOURCE[1], cost: 0 });
+  dist[SOURCE[0]][SOURCE[1]] = 0;
+
+  const directions = [[1,0],[-1,0],[0,1],[0,-1]];
+
+  while (pq.length > 0) {
+    pq.sort((a,b)=>a.cost-b.cost);
+    const { r, c, cost } = pq.shift();
+
+    if (r === DEST[0] && c === DEST[1]) break;
+
+    for (let [dr, dc] of directions) {
+      const nr = r + dr;
+      const nc = c + dc;
+      if (nr<0||nc<0||nr>=size||nc>=size) continue;
+
+      const stepCost = moveCost(grid, r, c, nr, nc);
+      if (stepCost === Infinity) continue;
+
+      const newCost = cost + stepCost;
+      if (newCost < dist[nr][nc]) {
+        dist[nr][nc] = newCost;
+        prev[nr][nc] = [r, c];
+        pq.push({ r: nr, c: nc, cost: newCost });
+      }
+    }
+  }
+
+  const path=[];
+  let curr=DEST;
+  while(curr){
+    path.unshift(curr);
+    curr=prev[curr[0]][curr[1]];
+  }
+
+  return { path, cost: dist[DEST[0]][DEST[1]] };
+}
+
+/* -------- APP -------- */
+function App(){
+
+  const [code,setCode]=React.useState("");
+  const [started,setStarted]=React.useState(false);
+  const [grid,setGrid]=React.useState([]);
+  const [path,setPath]=React.useState([SOURCE]);
+  const [userCost,setUserCost]=React.useState(null);
+  const [optimalPath,setOptimalPath]=React.useState([]);
+  const [stops,setStops]=React.useState(0);
+
+  React.useEffect(()=>{
+    const listener=(e)=>{
+      if(e.ctrlKey && e.shiftKey && e.key==="O"){
+        const result=findOptimal(grid);
+        setOptimalPath(result.path);
+        alert("Optimal Cost: "+result.cost.toFixed(2));
+      }
+      if(e.ctrlKey && e.key==="z"){
+        e.preventDefault();
+        undoStep();
+      }
+    };
+    window.addEventListener("keydown",listener);
+    return()=>window.removeEventListener("keydown",listener);
+  },[grid,path]);
+
+  function startGame(){
+    if(!code.trim()) return;
+    setGrid(generateGrid(code));
+    setStarted(true);
+    resetPath();
+  }
+
+  function resetPath(){
+    setPath([SOURCE]);
+    setUserCost(null);
+    setOptimalPath([]);
+    setStops(0);
+  }
+
+  function isAdjacent(r,c){
+    const [lr,lc]=path[path.length-1];
+    return Math.abs(lr-r)+Math.abs(lc-c)===1;
+  }
+
+  function handleClick(r,c){
+    if(!isAdjacent(r,c)) return;
+
+    const last=path[path.length-1];
+    const cost=moveCost(grid,last[0],last[1],r,c);
+
+    if(cost===Infinity){
+      setStops(stops+1);
+      return;
+    }
+
+    setPath([...path,[r,c]]);
+  }
+
+  function undoStep(){
+    if(path.length>1){
+      setPath(path.slice(0,-1));
+    }
+  }
+
+  function calculateScore(){
+    const last=path[path.length-1];
+    if(last[0]!==DEST[0]||last[1]!==DEST[1]){
+      alert("Reach destination first.");
+      return;
+    }
+
+    let total=0;
+    for(let i=1;i<path.length;i++){
+      total+=moveCost(grid,
+        path[i-1][0],path[i-1][1],
+        path[i][0],path[i][1]);
+    }
+
+    setUserCost(total.toFixed(2));
+  }
+
+  if(!started){
+    return(
+      <div>
+        <h2>Enter Challenge Code</h2>
+        <input value={code}
+               onChange={e=>setCode(e.target.value)}
+               placeholder="Shared code"/>
+        <br/><br/>
+        <button onClick={startGame}>Start Game</button>
+      </div>
+    );
+  }
+
+  return(
+    <div>
+      <h2>Gravity Path Challenge</h2>
+
+      <div className="rules">
+        <b>Rules:</b><br/>
+        • Move only up/down/left/right<br/>
+        • Elevation gain allowed up to 15m<br/>
+        • Gain >15m = blocked move<br/><br/>
+        <b>Cost:</b><br/>
+        • Base cost = 1 per move<br/>
+        • Uphill: +1 per 5m gain<br/>
+        • Downhill: +0.5<br/><br/>
+        <b>Hint:</b> Stops from blocked moves indicate steep barriers.
+      </div>
+
+      <div className="grid"
+           style={{gridTemplateColumns:`repeat(${GRID_SIZE},50px)`}}>
+        {grid.map((row,r)=>
+          row.map((val,c)=>{
+            let cls="cell";
+            if(r===SOURCE[0]&&c===SOURCE[1]) cls+=" start";
+            else if(r===DEST[0]&&c===DEST[1]) cls+=" end";
+            else if(optimalPath.some(p=>p[0]===r&&p[1]===c)) cls+=" optimal";
+            else if(path.some(p=>p[0]===r&&p[1]===c)) cls+=" path";
+
+            return(
+              <div key={r+"-"+c}
+                   className={cls}
+                   onClick={()=>handleClick(r,c)}>
+                {val}
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <button onClick={calculateScore}>Calculate My Cost</button>
+      <button onClick={undoStep}>Undo</button>
+      <button onClick={resetPath}>Reset</button>
+
+      {userCost && (
+        <div className="result">
+          Your Path Cost: {userCost}
+        </div>
+      )}
+
+      <div className="result">
+        Blocked Moves (Hints): {stops}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+</script>
+</body>
+</html>
